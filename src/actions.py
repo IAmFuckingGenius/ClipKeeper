@@ -8,9 +8,11 @@ from .i18n import tr
 
 try:
     import qrcode
-    from qrcode.image.svg import SvgImage
+    from qrcode.exceptions import DataOverflowError
     HAS_QR = True
 except ImportError:
+    qrcode = None
+    DataOverflowError = Exception
     HAS_QR = False
 
 try:
@@ -95,10 +97,10 @@ def show_qr_code(parent_widget, text: str):
     try:
         # Generate QR
         qr = qrcode.QRCode(
-            version=1,
+            version=None,
             error_correction=qrcode.constants.ERROR_CORRECT_L,
-            box_size=10,
-            border=4,
+            box_size=8,
+            border=3,
         )
         qr.add_data(text)
         qr.make(fit=True)
@@ -120,7 +122,11 @@ def show_qr_code(parent_widget, text: str):
         box.append(label)
         
     except Exception as e:
-        err_label = Gtk.Label(label=tr("actions.error", error=e))
+        text = str(e)
+        if isinstance(e, DataOverflowError) or "Invalid version" in text:
+            err_label = Gtk.Label(label=tr("actions.qr_too_large"))
+        else:
+            err_label = Gtk.Label(label=tr("actions.error", error=e))
         box.append(err_label)
 
     popover.set_child(box)

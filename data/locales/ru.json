@@ -10,7 +10,6 @@
   "common.disabled": "Отключено",
   "common.open_folder": "Открыть папку",
   "common.backup_now": "Сделать бэкап",
-
   "tray.show_toggle": "Показать / Скрыть",
   "tray.pause": "Приостановить",
   "tray.clear_history": "Очистить историю",
@@ -19,7 +18,6 @@
   "tray.quit": "Выход",
   "tray.stats.items": "{total} элементов",
   "tray.stats.pinned": " · {pinned} закрепл.",
-
   "window.menu": "Меню",
   "window.search_placeholder": "Поиск в буфере обмена…",
   "window.favorites": "Избранное",
@@ -36,7 +34,6 @@
   "window.stats.favorites": "Избранное: {count}",
   "window.incognito.on": "Инкогнито (вкл) — история не сохраняется",
   "window.incognito.off": "Инкогнито (выкл)",
-
   "app.clear_dialog.title": "Очистить историю?",
   "app.clear_dialog.body": "Все незакреплённые и неизбранные элементы будут удалены.",
   "app.export.title": "Экспорт истории",
@@ -49,7 +46,6 @@
   "app.toast.hotkey_failed_details": "Не удалось применить горячую клавишу: {reason}",
   "app.toast.backup_done": "Бэкап создан: {filename}",
   "app.toast.backup_failed": "Ошибка создания бэкапа",
-
   "settings.title": "Настройки",
   "settings.page.general": "Основные",
   "settings.group.history": "История",
@@ -65,7 +61,6 @@
   "settings.script_path.subtitle": "Путь к скрипту (Python/Bash)",
   "settings.script.select": "Выбрать скрипт",
   "settings.script.clear": "Очистить",
-
   "settings.page.appearance": "Внешний вид",
   "settings.group.appearance": "Стиль интерфейса",
   "settings.theme": "Цветовая схема",
@@ -83,7 +78,6 @@
   "settings.accent.grey": "Серый",
   "settings.compact_mode": "Компактный режим",
   "settings.compact_mode.subtitle": "Уменьшенные отступы в списке",
-
   "settings.page.interface": "Интерфейс",
   "settings.group.actions": "Кнопки действий",
   "settings.group.actions.desc": "Выберите, какие кнопки будут отображаться в списке",
@@ -105,7 +99,6 @@
   "settings.action.snippet.subtitle": "Сохранение как сниппет",
   "settings.action.delete.title": "Удалить",
   "settings.action.delete.subtitle": "Удаление элемента",
-
   "settings.page.storage": "Хранилище",
   "settings.group.images": "Изображения",
   "settings.group.images.desc": "Настройки хранения изображений",
@@ -123,18 +116,15 @@
   "settings.backup.keep.subtitle": "Сколько последних бэкапов оставлять",
   "settings.backup.path": "Папка бэкапов",
   "settings.backup.path.subtitle": "{path}",
-
   "settings.group.stats": "Статистика",
   "settings.stats.total": "Всего записей",
   "settings.stats.subtitle": "{total} элементов ({images} изображений, {pinned} закреплённых)",
-
   "settings.page.keyboard": "Клавиатура",
   "settings.group.hotkey": "Глобальная горячая клавиша",
   "settings.group.hotkey.desc": "Формат: Super+C или Ctrl+Alt+V",
   "settings.hotkey.label": "Показать / Скрыть ClipKeeper",
   "settings.hotkey.reset": "Сбросить к значению по умолчанию",
   "settings.hotkey.help": "Сохранённое значение: {binding}",
-
   "settings.page.language": "Язык",
   "settings.group.language": "Локализация",
   "settings.group.language.desc": "Язык интерфейса",
@@ -143,9 +133,7 @@
   "settings.language.english": "English",
   "settings.language.russian": "Русский",
   "settings.language.restart_hint": "Полностью применится после перезапуска приложения",
-
   "settings.file_dialog.script": "Выберите скрипт обработки",
-
   "item.masked": "****** (Скрыто)",
   "item.tooltip.edit": "Редактировать",
   "item.tooltip.translate": "Перевести",
@@ -161,7 +149,6 @@
   "item.quick.open_url": "Открыть в браузере",
   "item.quick.send_email": "Написать письмо",
   "item.quick.dial": "Позвонить",
-
   "preview.title": "Просмотр",
   "preview.copy": "Копировать",
   "preview.ocr": "Распознать текст",
@@ -169,21 +156,17 @@
   "preview.image_not_found": "Изображение не найдено",
   "preview.text_chars": "{count} символов",
   "preview.text_kb": "{size:.1f} КБ",
-
   "edit.title": "Редактирование",
-
   "image_editor.title": "Редактор изображений",
   "image_editor.crop": "Обрезать",
   "image_editor.crop_tip": "Обрезать по выделению",
   "image_editor.blur": "Заблюрить",
   "image_editor.blur_tip": "Размыть выделенную область",
   "image_editor.reset": "Сброс",
-
   "actions.ocr_missing": "Ошибка: Tesseract OCR не установлен. Установите 'tesseract-ocr' в вашей системе.",
   "actions.ocr_error": "Ошибка распознавания: {error}",
   "actions.qr_scan": "Сканируйте QR-код",
   "actions.error": "Ошибка:\n{error}",
-
   "detector.all": "Все",
   "detector.text": "Текст",
   "detector.url": "Ссылки",
@@ -192,9 +175,7 @@
   "detector.code": "Код",
   "detector.color": "Цвета",
   "detector.image": "Фото",
-
   "monitor.image_preview": "Изображение {width}x{height}",
-
   "time.unknown": "Неизвестно",
   "time.earlier": "Ранее",
   "time.now": "Сейчас",
@@ -206,10 +187,10 @@
   "time.months_ago": "{count} мес назад",
   "time.years_ago": "{count} г назад",
   "time.some_time_ago": "Некоторое время назад",
-
   "waybar.tooltip.header": "ClipKeeper - {total} элементов",
   "waybar.tooltip.pinned": "Закреплено: {count}",
   "waybar.tooltip.images": "Изображений: {count}",
   "waybar.tooltip.left_click": "ЛКМ - открыть/скрыть",
-  "waybar.tooltip.right_click": "ПКМ - остановить"
+  "waybar.tooltip.right_click": "ПКМ - остановить",
+  "actions.qr_too_large": "Текст слишком длинный для QR-кода"
 }

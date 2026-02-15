@@ -18,7 +18,6 @@ from .i18n import tr
 from .utils import (
     format_time_ago,
     get_category_emoji,
-    highlight_code,
     load_pixbuf_from_path,
 )
 
@@ -100,12 +99,11 @@ class ClipItemWidget(Gtk.ListBoxRow):
 
         # Preview text
         if self.category == "code" and self.text_content:
-            # Syntax highlighted preview (short)
-            text_to_show = tr("item.masked") if self.masked else self.text_content
-            highlighted = highlight_code(text_to_show, max_len=100)
+            # Keep list preview plain-text to avoid GTK markup rendering edge-cases.
+            text_to_show = tr("item.masked") if self.masked else self.preview_text
             self.preview_label = Gtk.Label(
-                use_markup=True,
-                label=highlighted,
+                use_markup=False,
+                label=text_to_show,
                 xalign=0,
                 lines=2,
                 ellipsize=3,
@@ -565,10 +563,9 @@ class ClipItemWidget(Gtk.ListBoxRow):
         
         # Update text
         if self.category == "code":
-             text = tr("item.masked") if self.masked else self.text_content
-             highlighted = highlight_code(text, max_len=100)
-             self.preview_label.set_label(highlighted)
-             self.preview_label.set_use_markup(True)
+             text = tr("item.masked") if self.masked else self.preview_text
+             self.preview_label.set_use_markup(False)
+             self.preview_label.set_label(text)
         else:
              text = tr("item.masked") if self.masked else self.preview_text
              self.preview_label.set_label(text)

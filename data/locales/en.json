@@ -10,7 +10,6 @@
   "common.disabled": "Disabled",
   "common.open_folder": "Open folder",
   "common.backup_now": "Backup now",
-
   "tray.show_toggle": "Show / Hide",
   "tray.pause": "Pause",
   "tray.clear_history": "Clear history",
@@ -19,7 +18,6 @@
   "tray.quit": "Quit",
   "tray.stats.items": "{total} items",
   "tray.stats.pinned": " · {pinned} pinned",
-
   "window.menu": "Menu",
   "window.search_placeholder": "Search clipboard…",
   "window.favorites": "Favorites",
@@ -36,7 +34,6 @@
   "window.stats.favorites": "Favorites: {count}",
   "window.incognito.on": "Incognito (on) — history is not saved",
   "window.incognito.off": "Incognito (off)",
-
   "app.clear_dialog.title": "Clear history?",
   "app.clear_dialog.body": "All unpinned and non-favorite entries will be removed.",
   "app.export.title": "Export history",
@@ -49,7 +46,6 @@
   "app.toast.hotkey_failed_details": "Hotkey setup failed: {reason}",
   "app.toast.backup_done": "Backup created: {filename}",
   "app.toast.backup_failed": "Backup failed",
-
   "settings.title": "Settings",
   "settings.page.general": "General",
   "settings.group.history": "History",
@@ -65,7 +61,6 @@
   "settings.script_path.subtitle": "Path to Python/Bash script",
   "settings.script.select": "Select script",
   "settings.script.clear": "Clear",
-
   "settings.page.appearance": "Appearance",
   "settings.group.appearance": "Interface style",
   "settings.theme": "Color scheme",
@@ -83,7 +78,6 @@
   "settings.accent.grey": "Grey",
   "settings.compact_mode": "Compact mode",
   "settings.compact_mode.subtitle": "Reduced spacing in list",
-
   "settings.page.interface": "Interface",
   "settings.group.actions": "Action buttons",
   "settings.group.actions.desc": "Choose which buttons are visible in the list",
@@ -105,7 +99,6 @@
   "settings.action.snippet.subtitle": "Save as snippet",
   "settings.action.delete.title": "Delete",
   "settings.action.delete.subtitle": "Delete item",
-
   "settings.page.storage": "Storage",
   "settings.group.images": "Images",
   "settings.group.images.desc": "Image storage options",
@@ -123,18 +116,15 @@
   "settings.backup.keep.subtitle": "Number of latest backups to keep",
   "settings.backup.path": "Backup folder",
   "settings.backup.path.subtitle": "{path}",
-
   "settings.group.stats": "Statistics",
   "settings.stats.total": "Total entries",
   "settings.stats.subtitle": "{total} entries ({images} images, {pinned} pinned)",
-
   "settings.page.keyboard": "Keyboard",
   "settings.group.hotkey": "Global hotkey",
   "settings.group.hotkey.desc": "Use format like Super+C or Ctrl+Alt+V",
   "settings.hotkey.label": "Show / Hide ClipKeeper",
   "settings.hotkey.reset": "Reset to default",
   "settings.hotkey.help": "Saved value: {binding}",
-
   "settings.page.language": "Language",
   "settings.group.language": "Localization",
   "settings.group.language.desc": "Interface language",
@@ -143,9 +133,7 @@
   "settings.language.english": "English",
   "settings.language.russian": "Russian",
   "settings.language.restart_hint": "Language will be fully applied after app restart",
-
   "settings.file_dialog.script": "Choose processing script",
-
   "item.masked": "****** (Hidden)",
   "item.tooltip.edit": "Edit",
   "item.tooltip.translate": "Translate",
@@ -161,7 +149,6 @@
   "item.quick.open_url": "Open in browser",
   "item.quick.send_email": "Send email",
   "item.quick.dial": "Dial",
-
   "preview.title": "Preview",
   "preview.copy": "Copy",
   "preview.ocr": "Extract text",
@@ -169,21 +156,17 @@
   "preview.image_not_found": "Image not found",
   "preview.text_chars": "{count} chars",
   "preview.text_kb": "{size:.1f} KB",
-
   "edit.title": "Edit",
-
   "image_editor.title": "Image editor",
   "image_editor.crop": "Crop",
   "image_editor.crop_tip": "Crop selected area",
   "image_editor.blur": "Blur",
   "image_editor.blur_tip": "Blur selected area",
   "image_editor.reset": "Reset",
-
   "actions.ocr_missing": "Error: Tesseract OCR is not installed. Install 'tesseract-ocr'.",
   "actions.ocr_error": "OCR error: {error}",
   "actions.qr_scan": "Scan QR code",
   "actions.error": "Error:\n{error}",
-
   "detector.all": "All",
   "detector.text": "Text",
   "detector.url": "Links",
@@ -192,9 +175,7 @@
   "detector.code": "Code",
   "detector.color": "Colors",
   "detector.image": "Images",
-
   "monitor.image_preview": "Image {width}x{height}",
-
   "time.unknown": "Unknown",
   "time.earlier": "Earlier",
   "time.now": "Now",
@@ -206,10 +187,10 @@
   "time.months_ago": "{count} mo ago",
   "time.years_ago": "{count} y ago",
   "time.some_time_ago": "Some time ago",
-
   "waybar.tooltip.header": "ClipKeeper - {total} items",
   "waybar.tooltip.pinned": "Pinned: {count}",
   "waybar.tooltip.images": "Images: {count}",
   "waybar.tooltip.left_click": "LMB - open/toggle",
-  "waybar.tooltip.right_click": "RMB - stop"
+  "waybar.tooltip.right_click": "RMB - stop",
+  "actions.qr_too_large": "Text is too long for QR code"
 }

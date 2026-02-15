@@ -1,0 +1,10 @@
+[Icon Theme]
+Name=ClipKeeper
+Comment=ClipKeeper Icons
+Directories=hicolor/scalable/apps
+
+[hicolor/scalable/apps]
+Size=24
+Type=Scalable
+MinSize=16
+MaxSize=256

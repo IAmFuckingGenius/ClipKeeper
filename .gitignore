@@ -1,0 +1,39 @@
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+
+# Virtual environments
+.venv/
+venv/
+env/
+
+# Build / tooling
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+.coverage
+coverage.xml
+htmlcov/
+
+# Local app/runtime artifacts
+startup.log
+*.log
+debug_plan.md
+
+# Clipboard app data (if ever created locally in repo)
+*.db
+*.sqlite
+*.sqlite3
+backups/
+images/
+
+# OS / editor
+.DS_Store
+Thumbs.db
+.idea/
+.vscode/
+
+# Temporary
+*.tmp
+*.swp

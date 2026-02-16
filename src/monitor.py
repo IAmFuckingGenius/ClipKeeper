@@ -8,6 +8,8 @@ import os
 import subprocess
 import threading
 import urllib.parse
+import base64
+import binascii
 
 import gi
 
@@ -55,6 +57,7 @@ class ClipboardMonitor(GObject.GObject):
         self._pending_read = False
         self._paused = False
         self._wl_paste_process = None
+        self._wl_text_watch_process = None
 
         display = Gdk.Display.get_default()
         if display is None:
@@ -87,7 +90,7 @@ class ClipboardMonitor(GObject.GObject):
         self._is_incognito = value
 
     def _start_wl_paste_watcher(self):
-        """Start wl-paste --watch for Wayland clipboard monitoring."""
+        """Start wl-paste watchers for Wayland clipboard monitoring."""
         # Check if wl-paste is available
         try:
             result = subprocess.run(
@@ -98,7 +101,7 @@ class ClipboardMonitor(GObject.GObject):
         except Exception:
             return
 
-        def _watch_thread():
+        def _event_watch_thread():
             try:
                 # wl-paste --watch triggers whenever clipboard changes
                 self._wl_paste_process = subprocess.Popen(
@@ -114,8 +117,43 @@ class ClipboardMonitor(GObject.GObject):
             except Exception as e:
                 print(f"[ClipKeeper] wl-paste watcher error: {e}")
 
-        thread = threading.Thread(target=_watch_thread, daemon=True)
+        def _text_watch_thread():
+            try:
+                # Capture each text clipboard update as an atomic snapshot.
+                self._wl_text_watch_process = subprocess.Popen(
+                    [
+                        "wl-paste",
+                        "--watch",
+                        "--type",
+                        "text",
+                        "sh",
+                        "-c",
+                        "base64 -w0; echo",
+                    ],
+                    stdout=subprocess.PIPE,
+                    stderr=subprocess.DEVNULL,
+                    text=True,
+                    bufsize=1,
+                )
+                for line in self._wl_text_watch_process.stdout:
+                    if self._paused:
+                        continue
+                    encoded = line.strip()
+                    if not encoded:
+                        continue
+                    try:
+                        raw = base64.b64decode(encoded)
+                    except (binascii.Error, ValueError):
+                        continue
+                    text = raw.decode("utf-8", errors="replace")
+                    GLib.idle_add(self._process_text_content, text)
+            except Exception as e:
+                print(f"[ClipKeeper] wl-paste text watcher error: {e}")
+
+        thread = threading.Thread(target=_event_watch_thread, daemon=True)
         thread.start()
+        text_thread = threading.Thread(target=_text_watch_thread, daemon=True)
+        text_thread.start()
 
     def _on_clipboard_changed(self, clipboard):
         """Called when clipboard content changes (GDK signal)."""
@@ -190,82 +228,88 @@ class ClipboardMonitor(GObject.GObject):
         """Handle text clipboard content."""
         try:
             text = clipboard.read_text_finish(result)
-            if text and text.strip():
-                text = text.strip()
-
-                # Some screenshot tools copy file paths/URIs instead of raw image mime.
-                # Handle those references as image clips.
-                image_ref_path = self._extract_image_file_path(text)
-                if image_ref_path:
-                    if self._handle_image_file_reference(image_ref_path):
-                        return
-
-                # Process with script if configured
-                script_path = self.db.get_setting("script_path")
-                if script_path and os.path.exists(script_path):
-                    try:
-                        # Ensure executable or run with interpreter? 
-                        # We'll assume executable or try basic run
-                        cmd = [script_path]
-                        if not os.access(script_path, os.X_OK):
-                            # Try to make it executable or warn?
-                            # Or if ends with .py use python, .sh use bash
-                            if script_path.endswith(".py"):
-                                cmd = ["python3", script_path]
-                            elif script_path.endswith(".sh"):
-                                cmd = ["bash", script_path]
-                        
-                        proc = subprocess.Popen(
-                            cmd, 
-                            stdin=subprocess.PIPE, 
-                            stdout=subprocess.PIPE, 
-                            stderr=subprocess.DEVNULL,
-                            text=True
-                        )
-                        processed, _ = proc.communicate(input=text, timeout=1.0)
-                        if proc.returncode == 0 and processed:
-                            text = processed.strip()
-                    except (subprocess.TimeoutExpired, Exception) as e:
-                        print(f"[ClipKeeper] Script error: {e}")
-
-                if self.is_incognito:
-                     # Skip saving, but maybe update last hash to avoid re-triggering?
-                     self.last_hash = compute_hash(text)
-                     return
-
-                content_hash = compute_hash(text)
-
-                if content_hash != self.last_hash:
-                    self.last_hash = content_hash
-
-                    # Auto-detect content type
-                    category, subtype, metadata, is_sensitive = ContentDetector.detect(text)
-                    preview = truncate_text(text, 120)
-
-                    clip_id = self.db.add_clip(
-                        content_type="text",
-                        content_hash=content_hash,
-                        preview=preview,
-                        category=category,
-                        content_subtype=subtype,
-                        text_content=text,
-                        metadata=metadata,
-                        is_sensitive=is_sensitive,
-                    )
-
-                    if clip_id is not None:
-                        self.emit("new-clip", clip_id)
-
-                        # Fetch URL title asynchronously if it's a URL
-                        if category == "url" and metadata.get("url"):
-                            fetch_url_title_async(
-                                metadata["url"],
-                                lambda url, title: self._on_url_title_fetched(clip_id, title)
-                            )
+            self._process_text_content(text)
         except Exception as e:
             print(f"[ClipKeeper] Error reading text: {e}")
         finally:
             self._finish_read()
+
+    def _process_text_content(self, text: str | None) -> bool:
+        """Process text clipboard payload and store it as a clip if needed."""
+        if self._paused or not text:
+            return False
+
+        text = text.strip()
+        if not text:
+            return False
+
+        # Some screenshot tools copy file paths/URIs instead of raw image mime.
+        # Handle those references as image clips.
+        image_ref_path = self._extract_image_file_path(text)
+        if image_ref_path:
+            self._handle_image_file_reference(image_ref_path)
+            return False
+
+        # Process with script if configured
+        script_path = self.db.get_setting("script_path")
+        if script_path and os.path.exists(script_path):
+            try:
+                cmd = [script_path]
+                if not os.access(script_path, os.X_OK):
+                    if script_path.endswith(".py"):
+                        cmd = ["python3", script_path]
+                    elif script_path.endswith(".sh"):
+                        cmd = ["bash", script_path]
+
+                proc = subprocess.Popen(
+                    cmd,
+                    stdin=subprocess.PIPE,
+                    stdout=subprocess.PIPE,
+                    stderr=subprocess.DEVNULL,
+                    text=True
+                )
+                processed, _ = proc.communicate(input=text, timeout=1.0)
+                if proc.returncode == 0 and processed:
+                    text = processed.strip()
+            except (subprocess.TimeoutExpired, Exception) as e:
+                print(f"[ClipKeeper] Script error: {e}")
+
+        if self.is_incognito:
+            self.last_hash = compute_hash(text)
+            return False
+
+        content_hash = compute_hash(text)
+        if content_hash == self.last_hash:
+            return False
+
+        self.last_hash = content_hash
+
+        # Auto-detect content type
+        category, subtype, metadata, is_sensitive = ContentDetector.detect(text)
+        preview = truncate_text(text, 120)
+
+        clip_id = self.db.add_clip(
+            content_type="text",
+            content_hash=content_hash,
+            preview=preview,
+            category=category,
+            content_subtype=subtype,
+            text_content=text,
+            metadata=metadata,
+            is_sensitive=is_sensitive,
+        )
+
+        if clip_id is not None:
+            self.emit("new-clip", clip_id)
+
+            # Fetch URL title asynchronously if it's a URL
+            if category == "url" and metadata.get("url"):
+                fetch_url_title_async(
+                    metadata["url"],
+                    lambda url, title: self._on_url_title_fetched(clip_id, title)
+                )
+
+        return False
 
     def _on_texture_read(self, clipboard, result):
         """Handle image clipboard content."""
@@ -392,5 +436,10 @@ class ClipboardMonitor(GObject.GObject):
         if self._wl_paste_process:
             try:
                 self._wl_paste_process.terminate()
+            except Exception:
+                pass
+        if self._wl_text_watch_process:
+            try:
+                self._wl_text_watch_process.terminate()
             except Exception:
                 pass

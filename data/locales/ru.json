@@ -192,5 +192,6 @@
   "waybar.tooltip.images": "Изображений: {count}",
   "waybar.tooltip.left_click": "ЛКМ - открыть/скрыть",
   "waybar.tooltip.right_click": "ПКМ - остановить",
-  "actions.qr_too_large": "Текст слишком длинный для QR-кода"
+  "actions.qr_too_large": "Текст слишком длинный для QR-кода",
+  "monitor.image_preview_generic": "Изображение"
 }

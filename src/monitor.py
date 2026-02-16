@@ -7,6 +7,7 @@ Stores new clips with auto-detected content types.
 import os
 import subprocess
 import threading
+import urllib.parse
 
 import gi
 
@@ -26,12 +27,32 @@ class ClipboardMonitor(GObject.GObject):
     __gsignals__ = {
         "new-clip": (GObject.SignalFlags.RUN_FIRST, None, (int,)),
     }
+    _IMAGE_MIME_TYPES = (
+        "image/png",
+        "image/jpeg",
+        "image/jpg",
+        "image/webp",
+        "image/bmp",
+        "image/tiff",
+        "image/gif",
+    )
+    _IMAGE_EXTENSIONS = (
+        ".png",
+        ".jpg",
+        ".jpeg",
+        ".webp",
+        ".bmp",
+        ".tif",
+        ".tiff",
+        ".gif",
+    )
 
     def __init__(self, db: Database):
         super().__init__()
         self.db = db
         self.last_hash: str | None = None
         self._reading = False
+        self._pending_read = False
         self._paused = False
         self._wl_paste_process = None
 
@@ -98,37 +119,72 @@ class ClipboardMonitor(GObject.GObject):
 
     def _on_clipboard_changed(self, clipboard):
         """Called when clipboard content changes (GDK signal)."""
-        if self._reading or self._paused:
+        if self._paused:
+            return
+        if self._reading:
+            self._pending_read = True
             return
         GLib.timeout_add(150, self._read_clipboard)
 
     def _poll_clipboard(self) -> bool:
         """Periodic polling fallback."""
-        if not self._reading and not self._paused:
+        if self._paused:
+            return True
+        if self._reading:
+            self._pending_read = True
+        else:
             self._read_clipboard()
         return True
 
     def _read_clipboard(self) -> bool:
         """Read the current clipboard content."""
-        if self._reading or self._paused:
+        if self._paused:
+            return False
+        if self._reading:
+            self._pending_read = True
             return False
         self._reading = True
+        self._pending_read = False
 
         try:
             formats = self.clipboard.get_formats()
 
             # Image first
-            if formats.contain_mime_type("image/png") or formats.contain_mime_type("image/jpeg"):
+            if self._clipboard_has_image(formats):
                 self.clipboard.read_texture_async(None, self._on_texture_read)
             elif formats.contain_gtype(GObject.TYPE_STRING):
                 self.clipboard.read_text_async(None, self._on_text_read)
             else:
-                self._reading = False
+                self._finish_read()
         except Exception as e:
             print(f"[ClipKeeper] Error reading clipboard: {e}")
-            self._reading = False
+            self._finish_read()
 
         return False
+
+    def _clipboard_has_image(self, formats) -> bool:
+        try:
+            if formats.contain_gtype(Gdk.Texture.__gtype__):
+                return True
+        except Exception:
+            pass
+
+        for mime in self._IMAGE_MIME_TYPES:
+            try:
+                if formats.contain_mime_type(mime):
+                    return True
+            except Exception:
+                continue
+        return False
+
+    def _finish_read(self):
+        self._reading = False
+        if self._paused:
+            self._pending_read = False
+            return
+        if self._pending_read:
+            self._pending_read = False
+            GLib.idle_add(self._read_clipboard)
 
     def _on_text_read(self, clipboard, result):
         """Handle text clipboard content."""
@@ -136,6 +192,13 @@ class ClipboardMonitor(GObject.GObject):
             text = clipboard.read_text_finish(result)
             if text and text.strip():
                 text = text.strip()
+
+                # Some screenshot tools copy file paths/URIs instead of raw image mime.
+                # Handle those references as image clips.
+                image_ref_path = self._extract_image_file_path(text)
+                if image_ref_path:
+                    if self._handle_image_file_reference(image_ref_path):
+                        return
 
                 # Process with script if configured
                 script_path = self.db.get_setting("script_path")
@@ -202,7 +265,7 @@ class ClipboardMonitor(GObject.GObject):
         except Exception as e:
             print(f"[ClipKeeper] Error reading text: {e}")
         finally:
-            self._reading = False
+            self._finish_read()
 
     def _on_texture_read(self, clipboard, result):
         """Handle image clipboard content."""
@@ -213,51 +276,110 @@ class ClipboardMonitor(GObject.GObject):
                 image_data = png_bytes.get_data()
 
                 if image_data:
-                    content_hash = compute_hash(image_data)
+                    if self.is_incognito:
+                        self.last_hash = compute_hash(image_data)
+                        return
 
-                    if content_hash != self.last_hash:
-                        self.last_hash = content_hash
-                        width = texture.get_width()
-                        height = texture.get_height()
-
-                        max_image_size = 2048
-                        image_quality = 85
-                        try:
-                            max_image_size = int(self.db.get_setting("max_image_size", "2048"))
-                        except (TypeError, ValueError):
-                            max_image_size = 2048
-                        try:
-                            image_quality = int(self.db.get_setting("image_quality", "85"))
-                        except (TypeError, ValueError):
-                            image_quality = 85
-
-                        # Save to filesystem
-                        image_path, thumb_path = save_image_to_file(
-                            image_data,
-                            content_hash,
-                            max_size=max_image_size,
-                            quality=image_quality,
-                        )
-
-                        preview = "🖼 " + tr("monitor.image_preview", width=width, height=height)
-
-                        clip_id = self.db.add_clip(
-                            content_type="image",
-                            content_hash=content_hash,
-                            preview=preview,
-                            category="image",
-                            image_path=image_path,
-                            thumb_path=thumb_path,
-                            image_width=width,
-                            image_height=height,
-                        )
-
-                        if clip_id is not None:
-                            self.emit("new-clip", clip_id)
+                    clip_id = self._store_image_clip(
+                        image_data,
+                        width=texture.get_width(),
+                        height=texture.get_height(),
+                    )
+                    if clip_id is not None:
+                        self.emit("new-clip", clip_id)
         except Exception as e:
             print(f"[ClipKeeper] Error reading texture: {e}")
         finally:
-            self._reading = False
+            self._finish_read()
+
+    def _store_image_clip(self, image_data: bytes, width: int | None = None, height: int | None = None):
+        content_hash = compute_hash(image_data)
+        if content_hash == self.last_hash:
+            return None
+        self.last_hash = content_hash
+
+        max_image_size = 2048
+        image_quality = 85
+        try:
+            max_image_size = int(self.db.get_setting("max_image_size", "2048"))
+        except (TypeError, ValueError):
+            max_image_size = 2048
+        try:
+            image_quality = int(self.db.get_setting("image_quality", "85"))
+        except (TypeError, ValueError):
+            image_quality = 85
+
+        image_path, thumb_path = save_image_to_file(
+            image_data,
+            content_hash,
+            max_size=max_image_size,
+            quality=image_quality,
+        )
+
+        if width and height:
+            preview = "🖼 " + tr("monitor.image_preview", width=width, height=height)
+        else:
+            preview = "🖼 " + tr("monitor.image_preview_generic")
+
+        return self.db.add_clip(
+            content_type="image",
+            content_hash=content_hash,
+            preview=preview,
+            category="image",
+            image_path=image_path,
+            thumb_path=thumb_path,
+            image_width=width,
+            image_height=height,
+        )
+
+    def _handle_image_file_reference(self, path: str) -> bool:
+        try:
+            with open(path, "rb") as f:
+                image_data = f.read()
+        except OSError:
+            return False
+
+        if not image_data:
+            return False
+
+        if self.is_incognito:
+            self.last_hash = compute_hash(image_data)
+            return True
+
+        width = None
+        height = None
+        try:
+            texture = Gdk.Texture.new_from_filename(path)
+            width = texture.get_width()
+            height = texture.get_height()
+        except Exception:
+            pass
+
+        clip_id = self._store_image_clip(image_data, width=width, height=height)
+        if clip_id is not None:
+            self.emit("new-clip", clip_id)
+        return True
+
+    def _extract_image_file_path(self, text: str) -> str | None:
+        for raw_line in text.splitlines():
+            candidate = raw_line.strip().strip("\x00")
+            if not candidate:
+                continue
+
+            path = None
+            if candidate.startswith("file://"):
+                parsed = urllib.parse.urlparse(candidate)
+                path = urllib.parse.unquote(parsed.path)
+            elif candidate.startswith("/") or candidate.startswith("~"):
+                path = os.path.expanduser(candidate)
+
+            if not path:
+                continue
+
+            if os.path.isfile(path) and path.lower().endswith(self._IMAGE_EXTENSIONS):
+                return path
+
+        return None
 
     def _on_url_title_fetched(self, clip_id: int, title: str | None):
         """Update clip metadata with fetched URL title."""

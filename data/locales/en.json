@@ -192,5 +192,6 @@
   "waybar.tooltip.images": "Images: {count}",
   "waybar.tooltip.left_click": "LMB - open/toggle",
   "waybar.tooltip.right_click": "RMB - stop",
-  "actions.qr_too_large": "Text is too long for QR code"
+  "actions.qr_too_large": "Text is too long for QR code",
+  "monitor.image_preview_generic": "Image"
 }

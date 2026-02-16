@@ -57,7 +57,7 @@ class ClipboardMonitor(GObject.GObject):
 
     # Polling interval in milliseconds.
     # 500 ms is a good balance between responsiveness and CPU usage.
-    _POLL_INTERVAL_MS = 100
+    _POLL_INTERVAL_MS = 250
 
     def __init__(self, db: Database):
         super().__init__()
@@ -65,9 +65,7 @@ class ClipboardMonitor(GObject.GObject):
         self.last_hash: str | None = None
         self._paused = False
         self._poll_source_id: int | None = None
-        self._wl_snapshot_inflight = False
         self._wayland_session = bool(os.environ.get("WAYLAND_DISPLAY"))
-        self._wl_paste_available = shutil.which("wl-paste") is not None
         self._state_lock = threading.Lock()
         self._image_queue: queue.Queue = queue.Queue(maxsize=128)
         self._image_worker_stop = threading.Event()
@@ -126,57 +124,13 @@ class ClipboardMonitor(GObject.GObject):
             formats = self.clipboard.get_formats()
 
             if self._clipboard_has_image(formats):
-                # Prefer wl-paste snapshots on Wayland; they are more reliable for
-                # rapid screenshot copies than GDK texture async callbacks.
-                if self._capture_image_snapshot_wl():
-                    return
+                # We use GDK texture reading which avoids spawning subprocesses,
+                # preventing dock flickering issues.
                 self.clipboard.read_texture_async(None, self._on_texture_read)
             elif formats.contain_gtype(GObject.TYPE_STRING):
                 self.clipboard.read_text_async(None, self._on_text_read)
         except Exception as e:
             print(f"[ClipKeeper] Error reading clipboard: {e}")
-
-    def _capture_image_snapshot_wl(self) -> bool:
-        """
-        Capture image bytes via wl-paste (Wayland) without --watch.
-        Returns True when snapshot capture was started or is already in flight.
-        """
-        if not self._wayland_session or not self._wl_paste_available:
-            return False
-        if self._wl_snapshot_inflight:
-            return True
-
-        self._wl_snapshot_inflight = True
-
-        def _worker():
-            data = None
-            try:
-                result = subprocess.run(
-                    ["wl-paste", "--no-newline", "--type", self._WL_IMAGE_MIME],
-                    capture_output=True,
-                    timeout=1.2,
-                )
-                if result.returncode == 0 and result.stdout:
-                    data = result.stdout
-            except Exception:
-                data = None
-            GLib.idle_add(self._on_wl_snapshot_captured, data)
-
-        threading.Thread(target=_worker, daemon=True).start()
-        return True
-
-    def _on_wl_snapshot_captured(self, image_data: bytes | None) -> bool:
-        self._wl_snapshot_inflight = False
-        if self._paused or not image_data:
-            return False
-
-        if self.is_incognito:
-            with self._state_lock:
-                self.last_hash = compute_hash(image_data)
-            return False
-
-        self._queue_image_snapshot(image_data)
-        return False
 
     def _clipboard_has_image(self, formats) -> bool:
         try:
@@ -221,6 +175,8 @@ class ClipboardMonitor(GObject.GObject):
                         height=texture.get_height(),
                     )
         except Exception as e:
+            # GDK texture reading can sometimes fail on Wayland if content is not ready
+            # or strictly compatible, but it's the safest non-flickering option.
             print(f"[ClipKeeper] Error reading texture: {e}")
 
     def _process_text_content(self, text: str | None) -> bool:
@@ -449,7 +405,7 @@ class ClipboardMonitor(GObject.GObject):
             except Exception:
                 pass
             self._poll_source_id = None
-
+        
         self._image_worker_stop.set()
         try:
             self._image_queue.put_nowait(None)

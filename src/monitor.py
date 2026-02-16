@@ -9,10 +9,9 @@ the primary detection mechanism.  The GDK signal is still connected as an
 optimistic fast-path for the cases where it does fire.
 """
 
-import base64
-import binascii
 import os
 import queue
+import shutil
 import subprocess
 import threading
 import urllib.parse
@@ -66,8 +65,9 @@ class ClipboardMonitor(GObject.GObject):
         self.last_hash: str | None = None
         self._paused = False
         self._poll_source_id: int | None = None
-        self._wl_image_watch_process = None
-        self._wl_image_watch_active = False
+        self._wl_snapshot_inflight = False
+        self._wayland_session = bool(os.environ.get("WAYLAND_DISPLAY"))
+        self._wl_paste_available = shutil.which("wl-paste") is not None
         self._state_lock = threading.Lock()
         self._image_queue: queue.Queue = queue.Queue(maxsize=128)
         self._image_worker_stop = threading.Event()
@@ -85,9 +85,6 @@ class ClipboardMonitor(GObject.GObject):
 
         # GDK signal — optimistic fast-path (unreliable on GNOME Wayland)
         self.clipboard.connect("changed", self._on_clipboard_changed)
-
-        # Wayland fast image snapshots to avoid losing rapid screenshots.
-        self._start_wl_image_watcher()
 
         # Fast polling — primary detection mechanism
         self._poll_source_id = GLib.timeout_add(self._POLL_INTERVAL_MS, self._poll_clipboard)
@@ -129,64 +126,47 @@ class ClipboardMonitor(GObject.GObject):
             formats = self.clipboard.get_formats()
 
             if self._clipboard_has_image(formats):
+                # Prefer wl-paste snapshots on Wayland; they are more reliable for
+                # rapid screenshot copies than GDK texture async callbacks.
+                if self._capture_image_snapshot_wl():
+                    return
                 self.clipboard.read_texture_async(None, self._on_texture_read)
             elif formats.contain_gtype(GObject.TYPE_STRING):
                 self.clipboard.read_text_async(None, self._on_text_read)
         except Exception as e:
             print(f"[ClipKeeper] Error reading clipboard: {e}")
 
-    def _start_wl_image_watcher(self):
-        """Capture each image clipboard event as its own snapshot (Wayland)."""
-        if not os.environ.get("WAYLAND_DISPLAY"):
-            return
+    def _capture_image_snapshot_wl(self) -> bool:
+        """
+        Capture image bytes via wl-paste (Wayland) without --watch.
+        Returns True when snapshot capture was started or is already in flight.
+        """
+        if not self._wayland_session or not self._wl_paste_available:
+            return False
+        if self._wl_snapshot_inflight:
+            return True
 
-        try:
-            result = subprocess.run(["which", "wl-paste"], capture_output=True, timeout=2)
-            if result.returncode != 0:
-                return
-        except Exception:
-            return
+        self._wl_snapshot_inflight = True
 
-        def _watch_thread():
+        def _worker():
+            data = None
             try:
-                self._wl_image_watch_process = subprocess.Popen(
-                    [
-                        "wl-paste",
-                        "--watch",
-                        "--type",
-                        self._WL_IMAGE_MIME,
-                        "sh",
-                        "-c",
-                        "base64 -w0; echo",
-                    ],
-                    stdout=subprocess.PIPE,
-                    stderr=subprocess.DEVNULL,
-                    text=True,
-                    bufsize=1,
+                result = subprocess.run(
+                    ["wl-paste", "--no-newline", "--type", self._WL_IMAGE_MIME],
+                    capture_output=True,
+                    timeout=1.2,
                 )
-                self._wl_image_watch_active = True
+                if result.returncode == 0 and result.stdout:
+                    data = result.stdout
+            except Exception:
+                data = None
+            GLib.idle_add(self._on_wl_snapshot_captured, data)
 
-                for line in self._wl_image_watch_process.stdout:
-                    if self._paused:
-                        continue
-                    encoded = line.strip()
-                    if not encoded:
-                        continue
-                    try:
-                        data = base64.b64decode(encoded)
-                    except (binascii.Error, ValueError):
-                        continue
-                    GLib.idle_add(self._process_wl_image_snapshot, data)
-            except Exception as e:
-                print(f"[ClipKeeper] wl image watcher error: {e}")
-            finally:
-                self._wl_image_watch_active = False
+        threading.Thread(target=_worker, daemon=True).start()
+        return True
 
-        thread = threading.Thread(target=_watch_thread, daemon=True)
-        thread.start()
-
-    def _process_wl_image_snapshot(self, image_data: bytes) -> bool:
-        """Process one image snapshot captured by wl-paste watcher."""
+    def _on_wl_snapshot_captured(self, image_data: bytes | None) -> bool:
+        self._wl_snapshot_inflight = False
         if self._paused or not image_data:
             return False
 
@@ -469,13 +449,6 @@ class ClipboardMonitor(GObject.GObject):
             except Exception:
                 pass
             self._poll_source_id = None
-
-        if self._wl_image_watch_process:
-            try:
-                self._wl_image_watch_process.terminate()
-            except Exception:
-                pass
-            self._wl_image_watch_process = None
 
         self._image_worker_stop.set()
         try:

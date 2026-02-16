@@ -12,6 +12,7 @@ optimistic fast-path for the cases where it does fire.
 import base64
 import binascii
 import os
+import queue
 import subprocess
 import threading
 import urllib.parse
@@ -67,6 +68,13 @@ class ClipboardMonitor(GObject.GObject):
         self._poll_source_id: int | None = None
         self._wl_image_watch_process = None
         self._wl_image_watch_active = False
+        self._state_lock = threading.Lock()
+        self._image_queue: queue.Queue = queue.Queue(maxsize=128)
+        self._image_worker_stop = threading.Event()
+        self._image_worker_thread = threading.Thread(
+            target=self._image_worker_loop, daemon=True
+        )
+        self._image_worker_thread.start()
 
         display = Gdk.Display.get_default()
         if display is None:
@@ -121,10 +129,6 @@ class ClipboardMonitor(GObject.GObject):
             formats = self.clipboard.get_formats()
 
             if self._clipboard_has_image(formats):
-                # On Wayland we capture image snapshots via wl-paste --watch.
-                # Skip async texture reads there to avoid racing to "last only".
-                if self._wl_image_watch_active:
-                    return
                 self.clipboard.read_texture_async(None, self._on_texture_read)
             elif formats.contain_gtype(GObject.TYPE_STRING):
                 self.clipboard.read_text_async(None, self._on_text_read)
@@ -187,12 +191,11 @@ class ClipboardMonitor(GObject.GObject):
             return False
 
         if self.is_incognito:
-            self.last_hash = compute_hash(image_data)
+            with self._state_lock:
+                self.last_hash = compute_hash(image_data)
             return False
 
-        clip_id = self._store_image_clip(image_data)
-        if clip_id is not None:
-            self.emit("new-clip", clip_id)
+        self._queue_image_snapshot(image_data)
         return False
 
     def _clipboard_has_image(self, formats) -> bool:
@@ -228,16 +231,15 @@ class ClipboardMonitor(GObject.GObject):
 
                 if image_data:
                     if self.is_incognito:
-                        self.last_hash = compute_hash(image_data)
+                        with self._state_lock:
+                            self.last_hash = compute_hash(image_data)
                         return
 
-                    clip_id = self._store_image_clip(
+                    self._queue_image_snapshot(
                         image_data,
                         width=texture.get_width(),
                         height=texture.get_height(),
                     )
-                    if clip_id is not None:
-                        self.emit("new-clip", clip_id)
         except Exception as e:
             print(f"[ClipKeeper] Error reading texture: {e}")
 
@@ -281,14 +283,13 @@ class ClipboardMonitor(GObject.GObject):
                 print(f"[ClipKeeper] Script error: {e}")
 
         if self.is_incognito:
-            self.last_hash = compute_hash(text)
+            with self._state_lock:
+                self.last_hash = compute_hash(text)
             return False
 
         content_hash = compute_hash(text)
-        if content_hash == self.last_hash:
+        if not self._mark_hash_if_new(content_hash):
             return False
-
-        self.last_hash = content_hash
 
         # Auto-detect content type
         category, subtype, metadata, is_sensitive = ContentDetector.detect(text)
@@ -318,9 +319,6 @@ class ClipboardMonitor(GObject.GObject):
 
     def _store_image_clip(self, image_data: bytes, width: int | None = None, height: int | None = None):
         content_hash = compute_hash(image_data)
-        if content_hash == self.last_hash:
-            return None
-        self.last_hash = content_hash
 
         max_image_size = 2048
         image_quality = 85
@@ -367,7 +365,8 @@ class ClipboardMonitor(GObject.GObject):
             return False
 
         if self.is_incognito:
-            self.last_hash = compute_hash(image_data)
+            with self._state_lock:
+                self.last_hash = compute_hash(image_data)
             return True
 
         width = None
@@ -379,10 +378,61 @@ class ClipboardMonitor(GObject.GObject):
         except Exception:
             pass
 
-        clip_id = self._store_image_clip(image_data, width=width, height=height)
-        if clip_id is not None:
-            self.emit("new-clip", clip_id)
+        self._queue_image_snapshot(image_data, width=width, height=height)
         return True
+
+    def _mark_hash_if_new(self, content_hash: str) -> bool:
+        """Returns True if hash is new and becomes current last_hash."""
+        with self._state_lock:
+            if content_hash == self.last_hash:
+                return False
+            self.last_hash = content_hash
+            return True
+
+    def _queue_image_snapshot(self, image_data: bytes, width: int | None = None, height: int | None = None):
+        """Queue image snapshot for background processing to avoid UI loop stalls."""
+        content_hash = compute_hash(image_data)
+        if not self._mark_hash_if_new(content_hash):
+            return
+
+        try:
+            self._image_queue.put_nowait((image_data, width, height))
+        except queue.Full:
+            # Drop oldest snapshot and enqueue the newest one.
+            try:
+                self._image_queue.get_nowait()
+                self._image_queue.task_done()
+            except queue.Empty:
+                pass
+            try:
+                self._image_queue.put_nowait((image_data, width, height))
+            except queue.Full:
+                pass
+
+    def _image_worker_loop(self):
+        while not self._image_worker_stop.is_set():
+            try:
+                item = self._image_queue.get(timeout=0.2)
+            except queue.Empty:
+                continue
+
+            if item is None:
+                self._image_queue.task_done()
+                break
+
+            image_data, width, height = item
+            try:
+                clip_id = self._store_image_clip(image_data, width=width, height=height)
+                if clip_id is not None:
+                    GLib.idle_add(self._emit_new_clip, clip_id)
+            except Exception as e:
+                print(f"[ClipKeeper] Error processing image snapshot: {e}")
+            finally:
+                self._image_queue.task_done()
+
+    def _emit_new_clip(self, clip_id: int) -> bool:
+        self.emit("new-clip", clip_id)
+        return False
 
     def _extract_image_file_path(self, text: str) -> str | None:
         for raw_line in text.splitlines():
@@ -426,3 +476,9 @@ class ClipboardMonitor(GObject.GObject):
             except Exception:
                 pass
             self._wl_image_watch_process = None
+
+        self._image_worker_stop.set()
+        try:
+            self._image_queue.put_nowait(None)
+        except queue.Full:
+            pass

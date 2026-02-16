@@ -1,15 +1,20 @@
 """
 ClipKeeper — Clipboard Monitor.
-Watches the system clipboard for changes using GDK4 + wl-paste fallback.
+Watches the system clipboard for changes using GDK4.
 Stores new clips with auto-detected content types.
+
+On GNOME Wayland the GDK "changed" signal is unreliable (fires only once
+or not at all for rapid copies), so we use fast polling (every 500 ms) as
+the primary detection mechanism.  The GDK signal is still connected as an
+optimistic fast-path for the cases where it does fire.
 """
 
+import base64
+import binascii
 import os
 import subprocess
 import threading
 import urllib.parse
-import base64
-import binascii
 
 import gi
 
@@ -48,16 +53,20 @@ class ClipboardMonitor(GObject.GObject):
         ".tiff",
         ".gif",
     )
+    _WL_IMAGE_MIME = "image/png"
+
+    # Polling interval in milliseconds.
+    # 500 ms is a good balance between responsiveness and CPU usage.
+    _POLL_INTERVAL_MS = 100
 
     def __init__(self, db: Database):
         super().__init__()
         self.db = db
         self.last_hash: str | None = None
-        self._reading = False
-        self._pending_read = False
         self._paused = False
-        self._wl_paste_process = None
-        self._wl_text_watch_process = None
+        self._poll_source_id: int | None = None
+        self._wl_image_watch_process = None
+        self._wl_image_watch_active = False
 
         display = Gdk.Display.get_default()
         if display is None:
@@ -65,13 +74,15 @@ class ClipboardMonitor(GObject.GObject):
             return
 
         self.clipboard = display.get_clipboard()
+
+        # GDK signal — optimistic fast-path (unreliable on GNOME Wayland)
         self.clipboard.connect("changed", self._on_clipboard_changed)
 
-        # Start wl-paste watcher for reliable Wayland monitoring
-        self._start_wl_paste_watcher()
+        # Wayland fast image snapshots to avoid losing rapid screenshots.
+        self._start_wl_image_watcher()
 
-        # Periodic polling as final fallback
-        GLib.timeout_add_seconds(3, self._poll_clipboard)
+        # Fast polling — primary detection mechanism
+        self._poll_source_id = GLib.timeout_add(self._POLL_INTERVAL_MS, self._poll_clipboard)
 
     @property
     def paused(self) -> bool:
@@ -80,7 +91,7 @@ class ClipboardMonitor(GObject.GObject):
     @paused.setter
     def paused(self, value: bool):
         self._paused = value
-        
+
     @property
     def is_incognito(self) -> bool:
         return getattr(self, "_is_incognito", False)
@@ -89,43 +100,57 @@ class ClipboardMonitor(GObject.GObject):
     def is_incognito(self, value: bool):
         self._is_incognito = value
 
-    def _start_wl_paste_watcher(self):
-        """Start wl-paste watchers for Wayland clipboard monitoring."""
-        # Check if wl-paste is available
+    def _on_clipboard_changed(self, clipboard):
+        """Called when clipboard content changes (GDK signal)."""
+        if self._paused:
+            return
+        self._read_clipboard()
+
+    def _poll_clipboard(self) -> bool:
+        """Fast polling — primary clipboard detection on GNOME Wayland."""
+        if not self._paused:
+            self._read_clipboard()
+        return True  # keep the timer alive
+
+    def _read_clipboard(self):
+        """Read the current clipboard content."""
+        if self._paused:
+            return
+
         try:
-            result = subprocess.run(
-                ["which", "wl-paste"], capture_output=True, timeout=2
-            )
+            formats = self.clipboard.get_formats()
+
+            if self._clipboard_has_image(formats):
+                # On Wayland we capture image snapshots via wl-paste --watch.
+                # Skip async texture reads there to avoid racing to "last only".
+                if self._wl_image_watch_active:
+                    return
+                self.clipboard.read_texture_async(None, self._on_texture_read)
+            elif formats.contain_gtype(GObject.TYPE_STRING):
+                self.clipboard.read_text_async(None, self._on_text_read)
+        except Exception as e:
+            print(f"[ClipKeeper] Error reading clipboard: {e}")
+
+    def _start_wl_image_watcher(self):
+        """Capture each image clipboard event as its own snapshot (Wayland)."""
+        if not os.environ.get("WAYLAND_DISPLAY"):
+            return
+
+        try:
+            result = subprocess.run(["which", "wl-paste"], capture_output=True, timeout=2)
             if result.returncode != 0:
                 return
         except Exception:
             return
 
-        def _event_watch_thread():
+        def _watch_thread():
             try:
-                # wl-paste --watch triggers whenever clipboard changes
-                self._wl_paste_process = subprocess.Popen(
-                    ["wl-paste", "--watch", "echo", "CLIPBOARD_CHANGED"],
-                    stdout=subprocess.PIPE,
-                    stderr=subprocess.DEVNULL,
-                    text=True,
-                )
-                for line in self._wl_paste_process.stdout:
-                    if "CLIPBOARD_CHANGED" in line and not self._paused:
-                        # Schedule clipboard read on the main thread
-                        GLib.idle_add(self._read_clipboard)
-            except Exception as e:
-                print(f"[ClipKeeper] wl-paste watcher error: {e}")
-
-        def _text_watch_thread():
-            try:
-                # Capture each text clipboard update as an atomic snapshot.
-                self._wl_text_watch_process = subprocess.Popen(
+                self._wl_image_watch_process = subprocess.Popen(
                     [
                         "wl-paste",
                         "--watch",
                         "--type",
-                        "text",
+                        self._WL_IMAGE_MIME,
                         "sh",
                         "-c",
                         "base64 -w0; echo",
@@ -135,69 +160,39 @@ class ClipboardMonitor(GObject.GObject):
                     text=True,
                     bufsize=1,
                 )
-                for line in self._wl_text_watch_process.stdout:
+                self._wl_image_watch_active = True
+
+                for line in self._wl_image_watch_process.stdout:
                     if self._paused:
                         continue
                     encoded = line.strip()
                     if not encoded:
                         continue
                     try:
-                        raw = base64.b64decode(encoded)
+                        data = base64.b64decode(encoded)
                     except (binascii.Error, ValueError):
                         continue
-                    text = raw.decode("utf-8", errors="replace")
-                    GLib.idle_add(self._process_text_content, text)
+                    GLib.idle_add(self._process_wl_image_snapshot, data)
             except Exception as e:
-                print(f"[ClipKeeper] wl-paste text watcher error: {e}")
+                print(f"[ClipKeeper] wl image watcher error: {e}")
+            finally:
+                self._wl_image_watch_active = False
 
-        thread = threading.Thread(target=_event_watch_thread, daemon=True)
+        thread = threading.Thread(target=_watch_thread, daemon=True)
         thread.start()
-        text_thread = threading.Thread(target=_text_watch_thread, daemon=True)
-        text_thread.start()
 
-    def _on_clipboard_changed(self, clipboard):
-        """Called when clipboard content changes (GDK signal)."""
-        if self._paused:
-            return
-        if self._reading:
-            self._pending_read = True
-            return
-        GLib.timeout_add(150, self._read_clipboard)
-
-    def _poll_clipboard(self) -> bool:
-        """Periodic polling fallback."""
-        if self._paused:
-            return True
-        if self._reading:
-            self._pending_read = True
-        else:
-            self._read_clipboard()
-        return True
-
-    def _read_clipboard(self) -> bool:
-        """Read the current clipboard content."""
-        if self._paused:
+    def _process_wl_image_snapshot(self, image_data: bytes) -> bool:
+        """Process one image snapshot captured by wl-paste watcher."""
+        if self._paused or not image_data:
             return False
-        if self._reading:
-            self._pending_read = True
+
+        if self.is_incognito:
+            self.last_hash = compute_hash(image_data)
             return False
-        self._reading = True
-        self._pending_read = False
 
-        try:
-            formats = self.clipboard.get_formats()
-
-            # Image first
-            if self._clipboard_has_image(formats):
-                self.clipboard.read_texture_async(None, self._on_texture_read)
-            elif formats.contain_gtype(GObject.TYPE_STRING):
-                self.clipboard.read_text_async(None, self._on_text_read)
-            else:
-                self._finish_read()
-        except Exception as e:
-            print(f"[ClipKeeper] Error reading clipboard: {e}")
-            self._finish_read()
-
+        clip_id = self._store_image_clip(image_data)
+        if clip_id is not None:
+            self.emit("new-clip", clip_id)
         return False
 
     def _clipboard_has_image(self, formats) -> bool:
@@ -215,15 +210,6 @@ class ClipboardMonitor(GObject.GObject):
                 continue
         return False
 
-    def _finish_read(self):
-        self._reading = False
-        if self._paused:
-            self._pending_read = False
-            return
-        if self._pending_read:
-            self._pending_read = False
-            GLib.idle_add(self._read_clipboard)
-
     def _on_text_read(self, clipboard, result):
         """Handle text clipboard content."""
         try:
@@ -231,8 +217,29 @@ class ClipboardMonitor(GObject.GObject):
             self._process_text_content(text)
         except Exception as e:
             print(f"[ClipKeeper] Error reading text: {e}")
-        finally:
-            self._finish_read()
+
+    def _on_texture_read(self, clipboard, result):
+        """Handle image clipboard content."""
+        try:
+            texture = clipboard.read_texture_finish(result)
+            if texture:
+                png_bytes = texture.save_to_png_bytes()
+                image_data = png_bytes.get_data()
+
+                if image_data:
+                    if self.is_incognito:
+                        self.last_hash = compute_hash(image_data)
+                        return
+
+                    clip_id = self._store_image_clip(
+                        image_data,
+                        width=texture.get_width(),
+                        height=texture.get_height(),
+                    )
+                    if clip_id is not None:
+                        self.emit("new-clip", clip_id)
+        except Exception as e:
+            print(f"[ClipKeeper] Error reading texture: {e}")
 
     def _process_text_content(self, text: str | None) -> bool:
         """Process text clipboard payload and store it as a clip if needed."""
@@ -244,7 +251,6 @@ class ClipboardMonitor(GObject.GObject):
             return False
 
         # Some screenshot tools copy file paths/URIs instead of raw image mime.
-        # Handle those references as image clips.
         image_ref_path = self._extract_image_file_path(text)
         if image_ref_path:
             self._handle_image_file_reference(image_ref_path)
@@ -266,7 +272,7 @@ class ClipboardMonitor(GObject.GObject):
                     stdin=subprocess.PIPE,
                     stdout=subprocess.PIPE,
                     stderr=subprocess.DEVNULL,
-                    text=True
+                    text=True,
                 )
                 processed, _ = proc.communicate(input=text, timeout=1.0)
                 if proc.returncode == 0 and processed:
@@ -302,39 +308,13 @@ class ClipboardMonitor(GObject.GObject):
         if clip_id is not None:
             self.emit("new-clip", clip_id)
 
-            # Fetch URL title asynchronously if it's a URL
             if category == "url" and metadata.get("url"):
                 fetch_url_title_async(
                     metadata["url"],
-                    lambda url, title: self._on_url_title_fetched(clip_id, title)
+                    lambda url, title: self._on_url_title_fetched(clip_id, title),
                 )
 
         return False
-
-    def _on_texture_read(self, clipboard, result):
-        """Handle image clipboard content."""
-        try:
-            texture = clipboard.read_texture_finish(result)
-            if texture:
-                png_bytes = texture.save_to_png_bytes()
-                image_data = png_bytes.get_data()
-
-                if image_data:
-                    if self.is_incognito:
-                        self.last_hash = compute_hash(image_data)
-                        return
-
-                    clip_id = self._store_image_clip(
-                        image_data,
-                        width=texture.get_width(),
-                        height=texture.get_height(),
-                    )
-                    if clip_id is not None:
-                        self.emit("new-clip", clip_id)
-        except Exception as e:
-            print(f"[ClipKeeper] Error reading texture: {e}")
-        finally:
-            self._finish_read()
 
     def _store_image_clip(self, image_data: bytes, width: int | None = None, height: int | None = None):
         content_hash = compute_hash(image_data)
@@ -429,17 +409,20 @@ class ClipboardMonitor(GObject.GObject):
         """Update clip metadata with fetched URL title."""
         if title:
             self.db.update_metadata(clip_id, {"page_title": title})
-            self.emit("new-clip", clip_id)  # Trigger UI refresh
+            self.emit("new-clip", clip_id)
 
     def stop(self):
         """Stop monitoring."""
-        if self._wl_paste_process:
+        if self._poll_source_id:
             try:
-                self._wl_paste_process.terminate()
+                GLib.source_remove(self._poll_source_id)
             except Exception:
                 pass
-        if self._wl_text_watch_process:
+            self._poll_source_id = None
+
+        if self._wl_image_watch_process:
             try:
-                self._wl_text_watch_process.terminate()
+                self._wl_image_watch_process.terminate()
             except Exception:
                 pass
+            self._wl_image_watch_process = None
